@@ -1,0 +1,7 @@
+[MASTER]
+# Abaikan duplikasi kode (wajar di TFX untuk deklarasi fitur)
+disable=duplicate-code
+
+[MESSAGES CONTROL]
+# Abaikan Pylint yang gagal ngebaca member keras di tensorflow
+disable=no-member
