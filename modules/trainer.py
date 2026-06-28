@@ -123,4 +123,15 @@ def run_fn(fn_args: FnArgs):
     }
 
     # FIX UNTUK KERAS 3: Pakai tf.saved_model.save
+    # FIX UNTUK KERAS 3: Ikat fungsi ke dalam object model agar variable tidak terhapus
+    model.serve_tf_examples_fn = _get_serve_tf_examples_fn(
+        model, tf_transform_output
+    ).get_concrete_function(
+        tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')
+    )
+
+    signatures = {
+        'serving_default': model.serve_tf_examples_fn
+    }
+
     tf.saved_model.save(model, fn_args.serving_model_dir, signatures=signatures)
