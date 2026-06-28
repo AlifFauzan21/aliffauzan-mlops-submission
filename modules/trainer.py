@@ -1,5 +1,6 @@
 """
 Modul Trainer untuk melatih model klasifikasi Pima Indians Diabetes.
+(Dilengkapi fix tf.Module dan DictWrapper copy untuk bug Keras 3)
 """
 
 import tensorflow as tf
@@ -43,7 +44,6 @@ def model_builder(hyperparameters):
 
     concatenated_inputs = tf.keras.layers.Concatenate()(list(inputs.values()))
 
-    # Mengambil nilai hyperparameter dari Tuner, atau pakai default kalau tidak ada
     units_1 = hyperparameters.get('units_1') if hyperparameters else 64
     dropout_1 = hyperparameters.get('dropout_1') if hyperparameters else 0.2
     units_2 = hyperparameters.get('units_2') if hyperparameters else 32
@@ -62,23 +62,29 @@ def model_builder(hyperparameters):
         loss='binary_crossentropy',
         metrics=[tf.keras.metrics.BinaryAccuracy()]
     )
-
-    model.summary()
     return model
 
-def _get_serve_tf_examples_fn(model, tf_transform_output):
-    """Fungsi untuk melayani (serving) model dengan data raw."""
-    model.tft_layer = tf_transform_output.transform_features_layer()
 
-    @tf.function
-    def serve_tf_examples_fn(serialized_tf_examples):
-        feature_spec = tf_transform_output.raw_feature_spec()
-        feature_spec.pop(LABEL_KEY)
-        parsed_features = tf.io.parse_example(serialized_tf_examples, feature_spec)
-        transformed_features = model.tft_layer(parsed_features)
-        return model(transformed_features)
+# --- KELAS SAKTI UNTUK NGE-BYPASS BUG KERAS 3 ---
+class ServeModelWrapper(tf.Module):
+    def __init__(self, model, tf_transform_output):
+        super().__init__()
+        self.model = model
+        self.tft_layer = tf_transform_output.transform_features_layer()
+        
+        # FIX: Ambil dict-nya, copy, hapus label, BARU dimasukkan ke self
+        raw_spec = tf_transform_output.raw_feature_spec().copy()
+        raw_spec.pop(LABEL_KEY) 
+        self.raw_feature_spec = raw_spec
 
-    return serve_tf_examples_fn
+    @tf.function(input_signature=[tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')])
+    def serve_fn(self, serialized_tf_examples):
+        parsed_features = tf.io.parse_example(serialized_tf_examples, self.raw_feature_spec)
+        transformed_features = self.tft_layer(parsed_features)
+        outputs = self.model(transformed_features)
+        return {'outputs': outputs}
+# ------------------------------------------------
+
 
 def run_fn(fn_args: FnArgs):
     """Fungsi utama yang dipanggil oleh komponen Trainer TFX."""
@@ -87,7 +93,6 @@ def run_fn(fn_args: FnArgs):
     train_dataset = input_fn(fn_args.train_files, tf_transform_output, num_epochs=10)
     eval_dataset = input_fn(fn_args.eval_files, tf_transform_output, num_epochs=10)
 
-    # Load best hyperparameters
     if fn_args.hyperparameters:
         hparams = fn_args.hyperparameters.get('values')
     else:
@@ -98,7 +103,6 @@ def run_fn(fn_args: FnArgs):
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
         log_dir=fn_args.model_run_dir, update_freq='batch'
     )
-
     early_stopping_callback = tf.keras.callbacks.EarlyStopping(
         monitor='val_binary_accuracy',
         patience=3,
@@ -114,24 +118,8 @@ def run_fn(fn_args: FnArgs):
         epochs=10
     )
 
-    signatures = {
-        'serving_default': _get_serve_tf_examples_fn(
-            model, tf_transform_output
-        ).get_concrete_function(
-            tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')
-        )
-    }
-
-    # FIX UNTUK KERAS 3: Pakai tf.saved_model.save
-    # FIX UNTUK KERAS 3: Ikat fungsi ke dalam object model agar variable tidak terhapus
-    model.serve_tf_examples_fn = _get_serve_tf_examples_fn(
-        model, tf_transform_output
-    ).get_concrete_function(
-        tf.TensorSpec(shape=[None], dtype=tf.string, name='examples')
-    )
-
-    signatures = {
-        'serving_default': model.serve_tf_examples_fn
-    }
-
-    tf.saved_model.save(model, fn_args.serving_model_dir, signatures=signatures)
+    # Eksekusi Wrapper dan Save
+    serve_wrapper = ServeModelWrapper(model, tf_transform_output)
+    signatures = {'serving_default': serve_wrapper.serve_fn}
+    
+    tf.saved_model.save(serve_wrapper, fn_args.serving_model_dir, signatures=signatures)
