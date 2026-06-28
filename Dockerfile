@@ -6,7 +6,7 @@ ENV MODEL_NAME=diabetes-model
 ENV PORT=8080
 
 # COPY langsung dari output Trainer (Trial 30) ke folder versi '1' standar TF Serving
-COPY ./output/aliffauzan-pipeline/Trainer/model/58/Format-Serving /models/diabetes-model/1
+COPY ./output/aliffauzan-pipeline/Trainer/model/40/Format-Serving /models/diabetes-model/1
 
 # Reset ENTRYPOINT bawaan image supaya port dinamis Cloud/Railway tidak bentrok
 ENTRYPOINT []
